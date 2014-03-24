@@ -6,6 +6,8 @@ var uuid = require('node-uuid');
 
 var restify = require('../lib');
 
+var xml2js = require('xml2js');
+
 if (require.cache[__dirname + '/lib/helper.js'])
     delete require.cache[__dirname + '/lib/helper.js'];
 var helper = require('./lib/helper.js');
@@ -20,12 +22,31 @@ var test = helper.test;
 var PORT = process.env.UNIT_TEST_PORT || 0;
 var JSON_CLIENT;
 var STR_CLIENT;
+var XML_CLIENT;
 var RAW_CLIENT;
 var TIMEOUT_CLIENT;
 var SERVER;
 
 
 ///--- Helpers
+function sendXml(req, res, next) { 
+    res.header('content-type', 'application/xml');
+    res.send('<example><test hello="' + (req.params.hello || req.params.name || null) + '"></test></example>')
+}
+
+
+function sendXmlWithRequestBody(req, res, next) {
+    xml2js.parseString(req.body, function(err, result) {
+      res.header('content-type', 'application/xml');
+      var requestEchoSnippet = "";
+      if (result.Request && result.Request.RequestValue) {
+        requestEchoSnippet = '<request>' + result.Request.RequestValue + '</request>';
+      }
+      res.send('<example><test hello="' + (req.params.hello || req.params.name || null) + '"></test>' + requestEchoSnippet + '</example>')
+      next();
+    });
+}
+
 
 function sendJson(req, res, next) {
     res.send({hello: req.params.hello || req.params.name || null});
@@ -71,6 +92,12 @@ function requestThatTimesOut(req, res, next) {
     }, 170);
 }
 
+function badXmlResponse(req, res, next) {
+    res.header('content-type', 'text/xml');
+    res.send('this is not valid XML!');
+    next();
+}
+
 
 ///--- Tests
 
@@ -81,7 +108,7 @@ before(function (callback) {
             log: helper.getLog('server')
         });
 
-        SERVER.use(restify.acceptParser(['json', 'text/plain']));
+        SERVER.use(restify.acceptParser(['json', 'text/plain', 'xml']));
         SERVER.use(restify.dateParser());
         SERVER.use(restify.authorizationParser());
         SERVER.use(restify.queryParser());
@@ -104,6 +131,13 @@ before(function (callback) {
             next();
         });
 
+        SERVER.get('/xml/badResponse', badXmlResponse);
+        SERVER.get('/xml/:name', sendXml);
+        SERVER.head('/xml/:name', sendXml);
+        SERVER.put('/xml/:name', sendXmlWithRequestBody);
+        SERVER.post('/xml/:name', sendXmlWithRequestBody);
+        SERVER.patch('/xml/:name', sendXmlWithRequestBody);
+
         SERVER.get('/json/:name', sendJson);
         SERVER.head('/json/:name', sendJson);
         SERVER.put('/json/:name', sendJson);
@@ -121,6 +155,11 @@ before(function (callback) {
         SERVER.listen(PORT, '127.0.0.1', function () {
             PORT = SERVER.address().port;
 
+            XML_CLIENT = restify.createXmlClient({
+                url: 'http://127.0.0.1:' + PORT,
+                dtrace: helper.dtrace,
+                retry: false
+            });
             JSON_CLIENT = restify.createJsonClient({
                 url: 'http://127.0.0.1:' + PORT,
                 dtrace: helper.dtrace,
@@ -157,6 +196,7 @@ before(function (callback) {
 
 after(function (callback) {
     try {
+        XML_CLIENT.close();
         JSON_CLIENT.close();
         STR_CLIENT.close();
         RAW_CLIENT.close();
@@ -166,6 +206,17 @@ after(function (callback) {
         process.exit(1);
     }
 });
+
+test('GET xml', function(t) {
+    XML_CLIENT.get('/xml/foo', function(err, req, res, obj) {
+        t.ifError(err);
+        t.ok(req);
+        t.ok(res);
+        t.deepEqual(obj, { example: { test: [ { '$': { hello: 'foo' } } ] } });
+        t.end();
+    });
+});
+
 
 test('GET json', function (t) {
     JSON_CLIENT.get('/json/mcavage', function (err, req, res, obj) {
@@ -184,6 +235,16 @@ test('GH-388 GET json, but really HTML', function (t) {
         t.ok(req);
         t.ok(res);
         t.deepEqual(obj, {});
+        t.end();
+    });
+});
+
+
+test('Get with XmlClient that is not valid XML', function(t) {
+    XML_CLIENT.get('/xml/badResponse', function(err, req, res, obj) {
+        t.ok(err);
+        t.ok(err.message);
+        t.equal(err.message, "Non-whitespace before first tag.\nLine: 0\nColumn: 1\nChar: t");
         t.end();
     });
 });
@@ -275,6 +336,65 @@ test('PATCH json', function (t) {
         t.ok(req);
         t.ok(res);
         t.deepEqual(obj, {hello: 'foo'});
+        t.end();
+    });
+});
+
+
+test('HEAD xml', function (t) {
+    XML_CLIENT.head('/xml/foo', function (err, req, res) {
+        t.ifError(err);
+        t.ok(req);
+        t.ok(res);
+        t.end();
+    });
+});
+
+
+test('POST xml', function (t) {
+    var data = { Request: { RequestValue: 'xxx' } };
+    XML_CLIENT.post('/xml/foo', data, function (err, req, res, obj) {
+        t.ifError(err);
+        t.ok(req);
+        t.ok(res);
+        t.deepEqual(obj, {example: { test: [ { '$': { hello: 'foo' } } ], request: [ 'xxx' ] } } );
+        t.end();
+    });
+});
+
+
+
+test('POST xml empty body object', function (t) {
+    var data = {};
+    XML_CLIENT.post('/xml/foo', data, function (err, req, res, obj) {
+        t.ifError(err);
+        t.ok(req);
+        t.ok(res);
+        t.deepEqual(obj, {example: { test: [ { '$': { hello: 'foo' } } ] } } );
+        t.end();
+    });
+});
+
+
+test('PUT xml', function (t) {
+    var data = { Request: { RequestValue: 'xxx' } };
+    XML_CLIENT.put('/xml/foo', data, function (err, req, res, obj) {
+        t.ifError(err);
+        t.ok(req);
+        t.ok(res);
+        t.deepEqual(obj, {example: { test: [ { '$': { hello: 'foo' } } ], request: [ 'xxx' ] } } );
+        t.end();
+    });
+});
+
+
+test('PATCH xml', function (t) {
+    var data = { Request: { RequestValue: 'xxx' } };
+    XML_CLIENT.patch('/xml/foo', data, function (err, req, res, obj) {
+        t.ifError(err);
+        t.ok(req);
+        t.ok(res);
+        t.deepEqual(obj, {example: { test: [ { '$': { hello: 'foo' } } ], request: [ 'xxx' ] } } );
         t.end();
     });
 });
