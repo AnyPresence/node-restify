@@ -7,6 +7,8 @@ var uuid = require('node-uuid');
 var restify = require('../lib');
 
 var xml2js = require('xml2js');
+var XMLSerializer = require('xmldom').XMLSerializer;
+var DOMParser = require('xmldom').DOMParser;
 
 if (require.cache[__dirname + '/lib/helper.js'])
     delete require.cache[__dirname + '/lib/helper.js'];
@@ -26,6 +28,8 @@ var XML_CLIENT;
 var RAW_CLIENT;
 var TIMEOUT_CLIENT;
 var SERVER;
+var SERIALIZER;
+var PARSER;
 
 
 ///--- Helpers
@@ -39,7 +43,7 @@ function sendXmlWithRequestBody(req, res, next) {
     xml2js.parseString(req.body, function(err, result) {
       res.header('content-type', 'application/xml');
       var requestEchoSnippet = "";
-      if (result.Request && result.Request.RequestValue) {
+      if (result !== null && result && result.Request && result.Request.RequestValue) {
         requestEchoSnippet = '<request>' + result.Request.RequestValue + '</request>';
       }
       res.send('<example><test hello="' + (req.params.hello || req.params.name || null) + '"></test>' + requestEchoSnippet + '</example>')
@@ -92,9 +96,10 @@ function requestThatTimesOut(req, res, next) {
     }, 170);
 }
 
+
 function badXmlResponse(req, res, next) {
     res.header('content-type', 'text/xml');
-    res.send('this is not valid XML!');
+    res.send('<request<body>this is not valid XML either</body></request>');
     next();
 }
 
@@ -103,6 +108,9 @@ function badXmlResponse(req, res, next) {
 
 before(function (callback) {
     try {
+        SERIALIZER = new XMLSerializer();
+        PARSER = new DOMParser();
+      
         SERVER = restify.createServer({
             dtrace: helper.dtrace,
             log: helper.getLog('server')
@@ -131,7 +139,7 @@ before(function (callback) {
             next();
         });
 
-        SERVER.get('/xml/badResponse', badXmlResponse);
+        SERVER.get('/xml/badXmlResponse', badXmlResponse);
         SERVER.get('/xml/:name', sendXml);
         SERVER.head('/xml/:name', sendXml);
         SERVER.put('/xml/:name', sendXmlWithRequestBody);
@@ -212,7 +220,7 @@ test('GET xml', function(t) {
         t.ifError(err);
         t.ok(req);
         t.ok(res);
-        t.deepEqual(obj, { example: { test: [ { '$': { hello: 'foo' } } ] } });
+        t.deepEqual(SERIALIZER.serializeToString(obj), '<example><test hello="foo"/></example>');
         t.end();
     });
 });
@@ -240,11 +248,10 @@ test('GH-388 GET json, but really HTML', function (t) {
 });
 
 
-test('Get with XmlClient that is not valid XML', function(t) {
-    XML_CLIENT.get('/xml/badResponse', function(err, req, res, obj) {
+test('Get with XmlClient that is malformed XML', function(t) {
+    XML_CLIENT.get('/xml/badXmlResponse', function(err, req, res, obj) {
         t.ok(err);
-        t.ok(err.message);
-        t.equal(err.message, "Non-whitespace before first tag.\nLine: 0\nColumn: 1\nChar: t");
+        t.equal(err, "error: element parse error: Error: invalid tagName:request<body\n@#[line:undefined,col:undefined]; ");
         t.end();
     });
 });
@@ -352,12 +359,12 @@ test('HEAD xml', function (t) {
 
 
 test('POST xml', function (t) {
-    var data = { Request: { RequestValue: 'xxx' } };
+    var data = PARSER.parseFromString("<Request><RequestValue>xxx</RequestValue></Request>");
     XML_CLIENT.post('/xml/foo', data, function (err, req, res, obj) {
         t.ifError(err);
         t.ok(req);
         t.ok(res);
-        t.deepEqual(obj, {example: { test: [ { '$': { hello: 'foo' } } ], request: [ 'xxx' ] } } );
+        t.deepEqual(SERIALIZER.serializeToString(obj), '<example><test hello="foo"/><request>xxx</request></example>');
         t.end();
     });
 });
@@ -365,36 +372,36 @@ test('POST xml', function (t) {
 
 
 test('POST xml empty body object', function (t) {
-    var data = {};
+    var data = "";
     XML_CLIENT.post('/xml/foo', data, function (err, req, res, obj) {
         t.ifError(err);
         t.ok(req);
         t.ok(res);
-        t.deepEqual(obj, {example: { test: [ { '$': { hello: 'foo' } } ] } } );
+        t.deepEqual(SERIALIZER.serializeToString(obj), '<example><test hello="foo"/></example>');
         t.end();
     });
 });
 
 
 test('PUT xml', function (t) {
-    var data = { Request: { RequestValue: 'xxx' } };
+    var data = PARSER.parseFromString("<Request><RequestValue>xxx</RequestValue></Request>");
     XML_CLIENT.put('/xml/foo', data, function (err, req, res, obj) {
         t.ifError(err);
         t.ok(req);
         t.ok(res);
-        t.deepEqual(obj, {example: { test: [ { '$': { hello: 'foo' } } ], request: [ 'xxx' ] } } );
+        t.deepEqual(SERIALIZER.serializeToString(obj), '<example><test hello="foo"/><request>xxx</request></example>');
         t.end();
     });
 });
 
 
 test('PATCH xml', function (t) {
-    var data = { Request: { RequestValue: 'xxx' } };
+    var data = PARSER.parseFromString("<Request><RequestValue>xxx</RequestValue></Request>");
     XML_CLIENT.patch('/xml/foo', data, function (err, req, res, obj) {
         t.ifError(err);
         t.ok(req);
         t.ok(res);
-        t.deepEqual(obj, {example: { test: [ { '$': { hello: 'foo' } } ], request: [ 'xxx' ] } } );
+        t.deepEqual(SERIALIZER.serializeToString(obj), '<example><test hello="foo"/><request>xxx</request></example>');
         t.end();
     });
 });
@@ -801,7 +808,7 @@ test('sign a request', function (t) {
     });
 });
 
-/* BEGIN JSSTYLED */
+// BEGIN JSSTYLED 
 test('secure client connection with timeout', function (t) {
     var server = restify.createServer({
         certificate: '-----BEGIN CERTIFICATE-----\n' +
@@ -855,4 +862,4 @@ test('secure client connection with timeout', function (t) {
         t.end();
     });
 });
-/* END JSSTYLED */
+// END JSSTYLED 
